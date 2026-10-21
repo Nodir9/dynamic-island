@@ -2,6 +2,7 @@ package dev.island.app
 
 import android.animation.Animator
 import android.animation.AnimatorListenerAdapter
+import android.animation.TimeInterpolator
 import android.animation.ValueAnimator
 import android.app.ActivityOptions
 import android.app.PendingIntent
@@ -9,6 +10,7 @@ import android.content.Context
 import android.graphics.Color
 import android.graphics.Outline
 import android.graphics.PixelFormat
+import android.graphics.Typeface
 import android.graphics.drawable.Drawable
 import android.graphics.drawable.GradientDrawable
 import android.os.Build
@@ -24,13 +26,15 @@ import android.view.MotionEvent
 import android.view.View
 import android.view.ViewOutlineProvider
 import android.view.WindowManager
-import android.view.animation.AccelerateInterpolator
-import android.view.animation.OvershootInterpolator
+import android.view.animation.AccelerateDecelerateInterpolator
 import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
+import kotlin.math.PI
 import kotlin.math.abs
+import kotlin.math.cos
+import kotlin.math.exp
 import kotlin.math.min
 
 class IslandItem(
@@ -47,6 +51,14 @@ object IslandOverlay {
     private val queue = ArrayDeque<IslandItem>()
     private var showing = false
     private val hideRunnable = Runnable { hide() }
+
+    // пружина: быстрый разгон, лёгкий перелёт и мягкая посадка (как у Apple)
+    private object Spring : TimeInterpolator {
+        override fun getInterpolation(t: Float): Float {
+            if (t >= 1f) return 1f
+            return (1.0 - exp(-7.0 * t) * cos(2.0 * PI * 1.2 * t)).toFloat()
+        }
+    }
 
     private class Cur(
         val root: FrameLayout,
@@ -102,21 +114,20 @@ object IslandOverlay {
         val offY = dp(pref("y", 11))
         val cw = dp(pref("w", 90))
         val ch = dp(pref("h", 30))
-        val ew = min(dm.widthPixels - dp(24), dp(380))
-        val eh = dp(76)
+        val ew = min(dm.widthPixels - dp(24), dp(pref("ew", 300)))
+        val eh = dp(pref("eh", 64))
 
         val bg = GradientDrawable().apply {
             setColor(Color.BLACK)
             cornerRadius = ch / 2f
         }
 
-        // содержимое карточки (фиксированного размера, обрезается рамкой острова)
         val icon = ImageView(app).apply {
             setImageDrawable(item.icon)
             scaleType = ImageView.ScaleType.CENTER_CROP
             outlineProvider = object : ViewOutlineProvider() {
                 override fun getOutline(v: View, o: Outline) {
-                    o.setRoundRect(0, 0, v.width, v.height, dp(10).toFloat())
+                    o.setRoundRect(0, 0, v.width, v.height, dp(9).toFloat())
                 }
             }
             clipToOutline = true
@@ -124,15 +135,15 @@ object IslandOverlay {
         val title = TextView(app).apply {
             text = item.title
             setTextColor(Color.WHITE)
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
-            setTypeface(typeface, android.graphics.Typeface.BOLD)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
+            setTypeface(typeface, Typeface.BOLD)
             maxLines = 1
             ellipsize = TextUtils.TruncateAt.END
         }
         val body = TextView(app).apply {
             text = item.text
             setTextColor(Color.parseColor("#B3FFFFFF"))
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
             maxLines = 2
             ellipsize = TextUtils.TruncateAt.END
         }
@@ -141,11 +152,12 @@ object IslandOverlay {
             addView(title)
             addView(body)
         }
+        val iconSize = min(dp(36), eh - dp(20))
         val content = LinearLayout(app).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(16), 0, dp(18), 0)
-            addView(icon, LinearLayout.LayoutParams(dp(42), dp(42)).apply { rightMargin = dp(12) })
+            setPadding(dp(14), 0, dp(16), 0)
+            addView(icon, LinearLayout.LayoutParams(iconSize, iconSize).apply { rightMargin = dp(10) })
             addView(texts, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
         }
 
@@ -168,13 +180,16 @@ object IslandOverlay {
         cur = c
         applyFrac(c, 0f)
 
-        // жесты: тап — открыть, свайп вверх — убрать
+        // жесты: тап — открыть, свайп вверх (с живым движением) — убрать
         var downY = 0f
-        island.setOnTouchListener { _, e ->
+        island.setOnTouchListener { v, e ->
             when (e.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
                     downY = e.rawY
                     main.removeCallbacks(hideRunnable)
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    v.translationY = ((e.rawY - downY) * 0.7f).coerceAtMost(0f)
                 }
                 MotionEvent.ACTION_UP -> {
                     val dy = e.rawY - downY
@@ -184,17 +199,21 @@ object IslandOverlay {
                         open(item.intent)
                         hide()
                     } else {
+                        v.animate().translationY(0f).setDuration(180).start()
                         main.postDelayed(hideRunnable, 2000)
                     }
                 }
-                MotionEvent.ACTION_CANCEL -> main.postDelayed(hideRunnable, 2000)
+                MotionEvent.ACTION_CANCEL -> {
+                    v.animate().translationY(0f).setDuration(180).start()
+                    main.postDelayed(hideRunnable, 2000)
+                }
             }
             true
         }
 
         val lp = WindowManager.LayoutParams(
-            ew + dp(16),
-            offY + eh + dp(12),
+            ew + dp(40),
+            offY + eh + dp(24),
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
                 WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
@@ -216,8 +235,8 @@ object IslandOverlay {
         }
 
         anim = ValueAnimator.ofFloat(0f, 1f).apply {
-            duration = 420
-            interpolator = OvershootInterpolator(0.8f)
+            duration = 560
+            interpolator = Spring
             addUpdateListener { applyFrac(c, it.animatedValue as Float) }
             start()
         }
@@ -230,8 +249,12 @@ object IslandOverlay {
         lp.width = (c.cw + (c.ew - c.cw) * v).toInt().coerceAtLeast(c.cw)
         lp.height = (c.ch + (c.eh - c.ch) * v).toInt().coerceAtLeast(c.ch)
         c.island.layoutParams = lp
-        c.bg.cornerRadius = min(lp.height / 2f, dp(34).toFloat())
-        c.content.alpha = ((v - 0.35f) / 0.5f).coerceIn(0f, 1f)
+        c.bg.cornerRadius = min(lp.height / 2f, c.eh * 0.44f)
+        val a = ((v - 0.3f) / 0.5f).coerceIn(0f, 1f)
+        c.content.alpha = a
+        val s = 0.88f + 0.12f * a
+        c.content.scaleX = s
+        c.content.scaleY = s
     }
 
     private fun hide() {
@@ -240,8 +263,8 @@ object IslandOverlay {
         cur = null
         anim?.cancel()
         anim = ValueAnimator.ofFloat(frac, 0f).apply {
-            duration = 260
-            interpolator = AccelerateInterpolator()
+            duration = 320
+            interpolator = AccelerateDecelerateInterpolator()
             addUpdateListener { applyFrac(c, it.animatedValue as Float) }
             addListener(object : AnimatorListenerAdapter() {
                 override fun onAnimationEnd(a: Animator) {

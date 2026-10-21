@@ -56,6 +56,12 @@ class MainActivity : Activity() {
         col.addView(slider("Отступ сверху", "y", 0, 60, 11))
         col.addView(slider("Ширина в свёрнутом виде", "w", 40, 220, 90))
         col.addView(slider("Высота в свёрнутом виде", "h", 20, 60, 30))
+        col.addView(TextView(this).apply {
+            text = "\nРазмер в развёрнутом виде:"
+            textSize = 15f
+        })
+        col.addView(slider("Ширина", "ew", 200, 380, 300))
+        col.addView(slider("Высота", "eh", 48, 100, 64))
 
         setContentView(ScrollView(this).apply { addView(col) })
     }
